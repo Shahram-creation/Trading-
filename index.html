@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal Generator</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--text:#1a1d21;--muted:#6b7280;--up:#16a34a;--down:#dc2626;--none:#9ca3af;--bd:#e5e7eb;--btn:#2563eb}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b21;--text:#e8eaed;--muted:#9aa0a6;--bd:#2a2e36}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:16px;max-width:720px;margin-inline:auto}
+h1{font-size:20px;margin:0 0 12px}
+input{width:100%;padding:12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--text);font-size:15px;margin-bottom:10px}
+button{width:100%;padding:14px;border:0;border-radius:10px;background:var(--btn);color:#fff;font-size:16px;font-weight:600}
+button:disabled{opacity:.6}
+.sub{color:var(--muted);font-size:13px;margin:10px 0 14px}
+.grid{display:grid;gap:12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.name{font-weight:600;font-size:16px}
+.meta{color:var(--muted);font-size:12px;margin-top:4px}
+.badge{font-weight:700;font-size:15px;padding:8px 14px;border-radius:8px;color:#fff;text-align:center;min-width:96px}
+.UP{background:var(--up)}.DOWN{background:var(--down)}.NONE,.ERROR{background:var(--none)}
+.wr{font-size:12px;margin-top:4px;font-weight:500}
+.warn{margin-top:16px;font-size:12px;color:var(--muted);line-height:1.5}
+</style>
+</head>
+<body>
+<h1>📊 Signal Generator</h1>
+<input id="key" type="password" placeholder="Twelve Data API key (ek baar daalo)">
+<button id="go">Generate Signal</button>
+<div class="sub" id="status">Key daalo aur button dabao.</div>
+<div class="grid" id="grid"></div>
+<div class="warn">⚠️ Win % pichle ~7 din ke 5m data ka backtest hai (expiry 15 min), guarantee nahi. Pehle demo account par test karo. Key sirf tumhare browser mein save hoti hai.</div>
+<script>
+var ASSETS = {"Gold":"XAU/USD","AUD/USD":"AUD/USD","EUR/USD":"EUR/USD"};
+var EXPIRY = 3;
+var keyEl = document.getElementById('key');
+try { keyEl.value = localStorage.getItem('td_key') || ''; } catch(e) {}
+
+function ema(a, n){ var k=2/(n+1), o=[a[0]]; for(var i=1;i<a.length;i++) o.push(a[i]*k+o[i-1]*(1-k)); return o; }
+function rsi(a, n){
+  var o=new Array(a.length).fill(null), g=0, l=0;
+  for(var i=1;i<a.length;i++){
+    var d=a[i]-a[i-1], gi=Math.max(d,0), li=Math.max(-d,0);
+    if(i<=n){ g+=gi/n; l+=li/n; if(i===n) o[i]=100-100/(1+g/(l||1e-9)); }
+    else { g=(g*(n-1)+gi)/n; l=(l*(n-1)+li)/n; o[i]=100-100/(1+g/(l||1e-9)); }
+  }
+  return o;
+}
+function analyze(name, rows){
+  var c = rows.map(function(r){return parseFloat(r.close);});
+  var times = rows.map(function(r){return r.datetime;});
+  c.pop(); times.pop(); // aakhri candle abhi ban rahi hoti hai
+  var e9=ema(c,9), e21=ema(c,21), r=rsi(c,14);
+  var sig = c.map(function(_,i){
+    if(r[i]===null || i<21) return 0;
+    if(e9[i]>e21[i] && r[i]>=50 && r[i]<=70) return 1;
+    if(e9[i]<e21[i] && r[i]>=30 && r[i]<50) return -1;
+    return 0;
+  });
+  var last = c.length-1, out = {asset:name, price:c[last], rsi:r[last], time:times[last], signal:'NONE', win:null, n:0};
+  if(sig[last]!==0){
+    var dir=sig[last], w=0, n=0;
+    for(var i=0;i<last-EXPIRY;i++){
+      if(sig[i]===dir){ n++; if(dir===1 ? c[i+EXPIRY]>c[i] : c[i+EXPIRY]<c[i]) w++; }
+    }
+    out.signal = dir===1 ? 'UP' : 'DOWN';
+    out.n = n; out.win = n>=30 ? (100*w/n).toFixed(1) : null;
+  }
+  return out;
+}
+async function fetchAsset(name, symbol, key){
+  var url = 'https://api.twelvedata.com/time_series?symbol='+encodeURIComponent(symbol)+'&interval=5min&outputsize=2000&apikey='+key;
+  var res = await fetch(url); var d = await res.json();
+  if(d.status==='error') throw new Error(d.message);
+  return analyze(name, d.values.slice().reverse());
+}
+function card(x){
+  var wr = x.win ? '<div class="wr">Win '+x.win+'% ('+x.n+')</div>' : (x.signal==='UP'||x.signal==='DOWN' ? '<div class="wr">Win: kam data</div>' : '');
+  var meta = x.price!==undefined ? 'Price '+x.price+' · RSI '+(x.rsi?x.rsi.toFixed(0):'-')+'<br>Candle: '+x.time : (x.note||'');
+  return '<div class="card"><div><div class="name">'+x.asset+'</div><div class="meta">'+meta+'</div></div><div class="badge '+x.signal+'">'+x.signal+wr+'</div></div>';
+}
+document.getElementById('go').onclick = async function(){
+  var key = keyEl.value.trim(), btn = this, st = document.getElementById('status'), grid = document.getElementById('grid');
+  if(!key){ st.textContent = 'Pehle API key daalo.'; return; }
+  try { localStorage.setItem('td_key', key); } catch(e) {}
+  btn.disabled = true; grid.innerHTML = ''; st.textContent = 'Data la raha hoon...';
+  var html = '';
+  for(var name in ASSETS){
+    try { html += card(await fetchAsset(name, ASSETS[name], key)); }
+    catch(e){ html += card({asset:name, signal:'ERROR', note:e.message}); }
+    grid.innerHTML = html;
+  }
+  st.textContent = 'Generated: ' + new Date().toLocaleTimeString() + ' | Expiry 15 min';
+  btn.disabled = false;
+};
+</script>
+</body>
+</html>
