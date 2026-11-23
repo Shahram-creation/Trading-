@@ -22,6 +22,8 @@ button:disabled{opacity:.6}
 .UP{color:var(--up)}.DOWN{color:var(--down)}.NONE,.ERROR{color:var(--none)}
 .pct{font-size:20px;font-weight:600}
 .meta{color:var(--muted);font-size:12px;margin-top:10px;line-height:1.5}
+.ai{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-top:12px;font-size:14px;line-height:1.5}
+.ai b{display:block;margin-top:8px}
 .warn{margin-top:16px;font-size:12px;color:var(--muted);line-height:1.5}
 </style>
 </head>
@@ -29,6 +31,10 @@ button:disabled{opacity:.6}
 <h1>📊 Signal Generator</h1>
 <label>Twelve Data API key (ek baar daalo)</label>
 <input id="key" type="password" placeholder="API key">
+<div class="row">
+  <div><label>Gemini API key (AI ke liye)</label><input id="gkey" type="password" placeholder="Gemini key"></div>
+  <div><label>Gemini model</label><input id="gmodel" type="text" placeholder="gemini-3.5-flash"></div>
+</div>
 <div class="row">
   <div><label>Asset</label>
     <select id="asset">
@@ -59,8 +65,10 @@ button:disabled{opacity:.6}
     </select></div>
 </div>
 <button id="go">Generate Signal</button>
+<button id="ai" style="margin-top:10px;background:#7c3aed">AI Analysis (Gemini)</button>
 <div class="sub" id="status">Asset aur time chuno, phir button dabao.</div>
 <div id="out"></div>
+<div id="aiout"></div>
 <div class="warn">⚠️ Win % pichle data ka backtest hai (chuna hua time = 1 candle expiry). Chhote time (1-2 min) par win % aksar 50% ke aaspaas hota hai, matlab edge kam hota hai. Guarantee nahi, pehle demo account par test karo.</div>
 <script>
 var keyEl = document.getElementById('key');
@@ -94,7 +102,8 @@ function analyze(c, t){
     if(e9[i]<e21[i] && r[i]>=30 && r[i]<50) return -1;
     return 0;
   });
-  var last=c.length-1, out={price:c[last], rsi:r[last], time:t[last], signal:'NONE', win:null, n:0, size:c.length};
+  var last=c.length-1, out={price:c[last], rsi:r[last], time:t[last], signal:'NONE', win:null, n:0, size:c.length,
+    e9:e9[last], e21:e21[last], tail:c.slice(-40)};
   if(sig[last]!==0){
     var dir=sig[last], w=0, n=0;
     for(var i=0;i<last;i++){
@@ -111,24 +120,84 @@ function show(name, tf, x){
   var meta = x.price!==undefined ? 'Price '+x.price+' · RSI '+x.rsi.toFixed(0)+'<br>Last candle: '+x.time+' · '+x.size+' candles ka backtest' : (x.note||'');
   document.getElementById('out').innerHTML = '<div class="res"><div class="name">'+name+' · '+tf+' min</div><div class="big '+x.signal+'">'+txt+'</div>'+pct+'<div class="meta">'+meta+'</div></div>';
 }
+var cache={}, IV={'1min':1,'5min':5,'15min':15,'30min':30};
+async function td(sym, interval, size, key){
+  var url='https://api.twelvedata.com/time_series?symbol='+encodeURIComponent(sym)+'&interval='+interval+'&outputsize='+size+'&apikey='+key;
+  var d=await (await fetch(url)).json();
+  if(d.status==='error') throw new Error(d.message);
+  return d.values.slice().reverse();
+}
+async function getRows(sym, tf, key){
+  var iv=NATIVE[tf], ck=sym+'|'+iv, c=cache[ck];
+  var stale = c && ((Date.now()-Date.parse(c[c.length-1].datetime.replace(' ','T')+'Z'))/60000/IV[iv] > 8);
+  if(!c || stale){ c=cache[ck]=await td(sym, iv, 1000, key); return c; }
+  var nw=await td(sym, iv, 10, key);
+  nw.forEach(function(r){
+    var i=c.length-1; while(i>=0 && c[i].datetime>r.datetime) i--;
+    if(i>=0 && c[i].datetime===r.datetime) c[i]=r; else c.splice(i+1,0,r);
+  });
+  return c;
+}
+var st=document.getElementById('status');
+async function prefetch(){
+  var key=keyEl.value.trim(); if(!key) return;
+  var sym=document.getElementById('asset').value, tf=parseInt(document.getElementById('tf').value,10);
+  st.textContent='Data ready kar raha hoon...';
+  try{ await getRows(sym, tf, key); st.textContent='Ready ✓ Ab Generate dabao.'; }
+  catch(e){ st.textContent='Error: '+e.message; }
+}
+['asset','tf'].forEach(function(id){ document.getElementById(id).onchange=prefetch; });
+keyEl.onchange=prefetch;
+if(keyEl.value) prefetch();
 document.getElementById('go').onclick = async function(){
   var key=keyEl.value.trim(), sym=document.getElementById('asset').value, tf=parseInt(document.getElementById('tf').value,10);
-  var btn=this, st=document.getElementById('status');
+  var btn=this, t0=performance.now();
   if(!key){ st.textContent='Pehle API key daalo.'; return; }
   try { localStorage.setItem('td_key', key); } catch(e) {}
-  btn.disabled=true; st.textContent='Data la raha hoon...';
+  btn.disabled=true; st.textContent='Signal bana raha hoon...';
   try{
-    var url='https://api.twelvedata.com/time_series?symbol='+encodeURIComponent(sym)+'&interval='+NATIVE[tf]+'&outputsize=5000&apikey='+key;
-    var d=await (await fetch(url)).json();
-    if(d.status==='error') throw new Error(d.message);
-    var rows=d.values.slice().reverse(); rows.pop(); // aakhri candle abhi ban rahi hai
+    var rows=(await getRows(sym, tf, key)).slice(); rows.pop(); // aakhri candle abhi ban rahi hai
     var m = tf<=3 ? tf : 1, agg=aggregate(rows, m);
-    if(m>1){ agg.c.pop(); agg.t.pop(); } // aakhri adhoori bucket hatao
-    show(sym, tf, analyze(agg.c, agg.t));
-    st.textContent='Generated: '+new Date().toLocaleTimeString();
+    if(m>1){ agg.c.pop(); agg.t.pop(); }
+    var res=analyze(agg.c, agg.t); window.lastCtx={sym:sym, tf:tf, res:res}; document.getElementById('aiout').innerHTML=''; show(sym, tf, res);
+    st.textContent='Generated: '+new Date().toLocaleTimeString()+' ('+((performance.now()-t0)/1000).toFixed(1)+'s)';
   }catch(e){
     show(sym, tf, {signal:'ERROR', note:e.message});
     st.textContent='Error aaya.';
+  }
+  btn.disabled=false;
+};
+
+function esc(t){ return String(t==null?'':t).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];}); }
+var gkeyEl=document.getElementById('gkey'), gmEl=document.getElementById('gmodel');
+try{ gkeyEl.value=localStorage.getItem('g_key')||''; gmEl.value=localStorage.getItem('g_model')||'gemini-3.5-flash'; }catch(e){ gmEl.value='gemini-3.5-flash'; }
+document.getElementById('ai').onclick = async function(){
+  var out=document.getElementById('aiout'), gk=gkeyEl.value.trim(), gm=gmEl.value.trim()||'gemini-3.5-flash', btn=this;
+  if(!window.lastCtx){ out.innerHTML='<div class="ai">Pehle Generate Signal dabao.</div>'; return; }
+  if(!gk){ out.innerHTML='<div class="ai">Gemini API key daalo (aistudio.google.com se free).</div>'; return; }
+  try{ localStorage.setItem('g_key',gk); localStorage.setItem('g_model',gm); }catch(e){}
+  btn.disabled=true; out.innerHTML='<div class="ai">Gemini soch raha hai...</div>';
+  var x=window.lastCtx.res, c=window.lastCtx;
+  var prompt='You are a cautious trading analyst. Asset: '+c.sym+'. Candle/expiry: '+c.tf+' minute. '
+   +'Last 40 closing prices (oldest to newest): '+x.tail.map(function(v){return +v.toFixed(5);}).join(', ')+'. '
+   +'EMA9='+x.e9.toFixed(5)+', EMA21='+x.e21.toFixed(5)+', RSI14='+x.rsi.toFixed(1)+'. '
+   +'Rule-based signal: '+x.signal+'. Backtest win rate of this rule: '+(x.win?x.win+'% over '+x.n+' trades':'not enough data')+'. '
+   +'Decide whether the next candle closes UP or DOWN, or say NO TRADE if the setup is weak, choppy or uncertain. Do not invent data. '
+   +'Reply ONLY as JSON: {"decision":"UP|DOWN|NO TRADE","confidence":0-100,"reason":"max 2 short sentences in Hinglish","risk":"one short risk note in Hinglish"}';
+  try{
+    var res=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(gm)+':generateContent',{
+      method:'POST', headers:{'Content-Type':'application/json','x-goog-api-key':gk},
+      body:JSON.stringify({contents:[{parts:[{text:prompt}]}], generationConfig:{responseMimeType:'application/json', temperature:0.2}})
+    });
+    var d=await res.json();
+    if(d.error) throw new Error(d.error.message);
+    var txt=d.candidates[0].content.parts.map(function(p){return p.text||'';}).join('');
+    var j=JSON.parse(txt.replace(/```json|```/g,'').trim());
+    var agree = (j.decision===x.signal) ? '✅ Rule signal se match' : (x.signal==='NONE' ? 'ℹ️ Rule mein signal nahi tha' : '⚠️ Rule signal se alag');
+    out.innerHTML='<div class="ai"><b style="margin:0">🤖 Gemini: '+esc(j.decision)+' · confidence '+esc(j.confidence)+'%</b>'
+      +'<b>Reason</b>'+esc(j.reason)+'<b>Risk</b>'+esc(j.risk)+'<div class="meta">'+agree+'. Confidence sirf andaaza hai, asli win % backtest wala hai.</div></div>';
+  }catch(e){
+    out.innerHTML='<div class="ai">Gemini error: '+esc(e.message)+'<div class="meta">Model naam badal ke dekho (jaise gemini-3.5-flash-lite) ya key check karo.</div></div>';
   }
   btn.disabled=false;
 };
