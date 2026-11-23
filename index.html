@@ -10,32 +10,62 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;padding:16px;max-width:720px;margin-inline:auto}
 h1{font-size:20px;margin:0 0 12px}
-input{width:100%;padding:12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--text);font-size:15px;margin-bottom:10px}
+label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
+input,select{width:100%;padding:12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--text);font-size:15px;margin-bottom:10px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 button{width:100%;padding:14px;border:0;border-radius:10px;background:var(--btn);color:#fff;font-size:16px;font-weight:600}
 button:disabled{opacity:.6}
 .sub{color:var(--muted);font-size:13px;margin:10px 0 14px}
-.grid{display:grid;gap:12px}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center;gap:10px}
-.name{font-weight:600;font-size:16px}
-.meta{color:var(--muted);font-size:12px;margin-top:4px}
-.badge{font-weight:700;font-size:15px;padding:8px 14px;border-radius:8px;color:#fff;text-align:center;min-width:96px}
-.UP{background:var(--up)}.DOWN{background:var(--down)}.NONE,.ERROR{background:var(--none)}
-.wr{font-size:12px;margin-top:4px;font-weight:500}
+.res{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:18px;text-align:center}
+.res .name{font-weight:600;font-size:16px}
+.big{font-size:34px;font-weight:800;margin:10px 0 2px}
+.UP{color:var(--up)}.DOWN{color:var(--down)}.NONE,.ERROR{color:var(--none)}
+.pct{font-size:20px;font-weight:600}
+.meta{color:var(--muted);font-size:12px;margin-top:10px;line-height:1.5}
 .warn{margin-top:16px;font-size:12px;color:var(--muted);line-height:1.5}
 </style>
 </head>
 <body>
 <h1>📊 Signal Generator</h1>
-<input id="key" type="password" placeholder="Twelve Data API key (ek baar daalo)">
+<label>Twelve Data API key (ek baar daalo)</label>
+<input id="key" type="password" placeholder="API key">
+<div class="row">
+  <div><label>Asset</label>
+    <select id="asset">
+      <option value="XAU/USD">Gold (XAU/USD)</option>
+      <option value="XAG/USD">Silver (XAG/USD)</option>
+      <option value="AUD/USD">AUD/USD</option>
+      <option value="EUR/USD">EUR/USD</option>
+      <option value="GBP/USD">GBP/USD</option>
+      <option value="USD/JPY">USD/JPY</option>
+      <option value="USD/CAD">USD/CAD</option>
+      <option value="USD/CHF">USD/CHF</option>
+      <option value="NZD/USD">NZD/USD</option>
+      <option value="EUR/JPY">EUR/JPY</option>
+      <option value="GBP/JPY">GBP/JPY</option>
+      <option value="AUD/JPY">AUD/JPY</option>
+      <option value="EUR/GBP">EUR/GBP</option>
+      <option value="BTC/USD">Bitcoin (BTC/USD)</option>
+      <option value="ETH/USD">Ethereum (ETH/USD)</option>
+    </select></div>
+  <div><label>Time (trade expiry)</label>
+    <select id="tf">
+      <option value="1">1 min</option>
+      <option value="2">2 min</option>
+      <option value="3">3 min</option>
+      <option value="5" selected>5 min</option>
+      <option value="15">15 min</option>
+      <option value="30">30 min</option>
+    </select></div>
+</div>
 <button id="go">Generate Signal</button>
-<div class="sub" id="status">Key daalo aur button dabao.</div>
-<div class="grid" id="grid"></div>
-<div class="warn">⚠️ Win % pichle ~7 din ke 5m data ka backtest hai (expiry 15 min), guarantee nahi. Pehle demo account par test karo. Key sirf tumhare browser mein save hoti hai.</div>
+<div class="sub" id="status">Asset aur time chuno, phir button dabao.</div>
+<div id="out"></div>
+<div class="warn">⚠️ Win % pichle data ka backtest hai (chuna hua time = 1 candle expiry). Chhote time (1-2 min) par win % aksar 50% ke aaspaas hota hai, matlab edge kam hota hai. Guarantee nahi, pehle demo account par test karo.</div>
 <script>
-var ASSETS = {"Gold":"XAU/USD","AUD/USD":"AUD/USD","EUR/USD":"EUR/USD"};
-var EXPIRY = 3;
 var keyEl = document.getElementById('key');
 try { keyEl.value = localStorage.getItem('td_key') || ''; } catch(e) {}
+var NATIVE = {1:'1min',2:'1min',3:'1min',5:'5min',15:'15min',30:'30min'};
 
 function ema(a, n){ var k=2/(n+1), o=[a[0]]; for(var i=1;i<a.length;i++) o.push(a[i]*k+o[i-1]*(1-k)); return o; }
 function rsi(a, n){
@@ -47,10 +77,16 @@ function rsi(a, n){
   }
   return o;
 }
-function analyze(name, rows){
-  var c = rows.map(function(r){return parseFloat(r.close);});
-  var times = rows.map(function(r){return r.datetime;});
-  c.pop(); times.pop(); // aakhri candle abhi ban rahi hoti hai
+function aggregate(rows, m){
+  var c=[], t=[], lastKey=null;
+  rows.forEach(function(r){
+    var ms = Date.parse(r.datetime.replace(' ','T')+'Z'), key = Math.floor(ms/(m*60000));
+    if(key===lastKey){ c[c.length-1]=parseFloat(r.close); t[t.length-1]=r.datetime; }
+    else { c.push(parseFloat(r.close)); t.push(r.datetime); lastKey=key; }
+  });
+  return {c:c, t:t};
+}
+function analyze(c, t){
   var e9=ema(c,9), e21=ema(c,21), r=rsi(c,14);
   var sig = c.map(function(_,i){
     if(r[i]===null || i<21) return 0;
@@ -58,41 +94,43 @@ function analyze(name, rows){
     if(e9[i]<e21[i] && r[i]>=30 && r[i]<50) return -1;
     return 0;
   });
-  var last = c.length-1, out = {asset:name, price:c[last], rsi:r[last], time:times[last], signal:'NONE', win:null, n:0};
+  var last=c.length-1, out={price:c[last], rsi:r[last], time:t[last], signal:'NONE', win:null, n:0, size:c.length};
   if(sig[last]!==0){
     var dir=sig[last], w=0, n=0;
-    for(var i=0;i<last-EXPIRY;i++){
-      if(sig[i]===dir){ n++; if(dir===1 ? c[i+EXPIRY]>c[i] : c[i+EXPIRY]<c[i]) w++; }
+    for(var i=0;i<last;i++){
+      if(sig[i]===dir){ n++; if(dir===1 ? c[i+1]>c[i] : c[i+1]<c[i]) w++; }
     }
     out.signal = dir===1 ? 'UP' : 'DOWN';
-    out.n = n; out.win = n>=30 ? (100*w/n).toFixed(1) : null;
+    out.n=n; out.win = n>=30 ? (100*w/n).toFixed(1) : null;
   }
   return out;
 }
-async function fetchAsset(name, symbol, key){
-  var url = 'https://api.twelvedata.com/time_series?symbol='+encodeURIComponent(symbol)+'&interval=5min&outputsize=2000&apikey='+key;
-  var res = await fetch(url); var d = await res.json();
-  if(d.status==='error') throw new Error(d.message);
-  return analyze(name, d.values.slice().reverse());
-}
-function card(x){
-  var wr = x.win ? '<div class="wr">Win '+x.win+'% ('+x.n+')</div>' : (x.signal==='UP'||x.signal==='DOWN' ? '<div class="wr">Win: kam data</div>' : '');
-  var meta = x.price!==undefined ? 'Price '+x.price+' · RSI '+(x.rsi?x.rsi.toFixed(0):'-')+'<br>Candle: '+x.time : (x.note||'');
-  return '<div class="card"><div><div class="name">'+x.asset+'</div><div class="meta">'+meta+'</div></div><div class="badge '+x.signal+'">'+x.signal+wr+'</div></div>';
+function show(name, tf, x){
+  var txt = x.signal==='UP' ? '▲ UP' : x.signal==='DOWN' ? '▼ DOWN' : x.signal==='ERROR' ? 'ERROR' : 'NO SIGNAL';
+  var pct = (x.signal==='UP'||x.signal==='DOWN') ? '<div class="pct">'+(x.win ? 'Win '+x.win+'% ('+x.n+' trades)' : 'Win %: kam data')+'</div>' : '';
+  var meta = x.price!==undefined ? 'Price '+x.price+' · RSI '+x.rsi.toFixed(0)+'<br>Last candle: '+x.time+' · '+x.size+' candles ka backtest' : (x.note||'');
+  document.getElementById('out').innerHTML = '<div class="res"><div class="name">'+name+' · '+tf+' min</div><div class="big '+x.signal+'">'+txt+'</div>'+pct+'<div class="meta">'+meta+'</div></div>';
 }
 document.getElementById('go').onclick = async function(){
-  var key = keyEl.value.trim(), btn = this, st = document.getElementById('status'), grid = document.getElementById('grid');
-  if(!key){ st.textContent = 'Pehle API key daalo.'; return; }
+  var key=keyEl.value.trim(), sym=document.getElementById('asset').value, tf=parseInt(document.getElementById('tf').value,10);
+  var btn=this, st=document.getElementById('status');
+  if(!key){ st.textContent='Pehle API key daalo.'; return; }
   try { localStorage.setItem('td_key', key); } catch(e) {}
-  btn.disabled = true; grid.innerHTML = ''; st.textContent = 'Data la raha hoon...';
-  var html = '';
-  for(var name in ASSETS){
-    try { html += card(await fetchAsset(name, ASSETS[name], key)); }
-    catch(e){ html += card({asset:name, signal:'ERROR', note:e.message}); }
-    grid.innerHTML = html;
+  btn.disabled=true; st.textContent='Data la raha hoon...';
+  try{
+    var url='https://api.twelvedata.com/time_series?symbol='+encodeURIComponent(sym)+'&interval='+NATIVE[tf]+'&outputsize=5000&apikey='+key;
+    var d=await (await fetch(url)).json();
+    if(d.status==='error') throw new Error(d.message);
+    var rows=d.values.slice().reverse(); rows.pop(); // aakhri candle abhi ban rahi hai
+    var m = tf<=3 ? tf : 1, agg=aggregate(rows, m);
+    if(m>1){ agg.c.pop(); agg.t.pop(); } // aakhri adhoori bucket hatao
+    show(sym, tf, analyze(agg.c, agg.t));
+    st.textContent='Generated: '+new Date().toLocaleTimeString();
+  }catch(e){
+    show(sym, tf, {signal:'ERROR', note:e.message});
+    st.textContent='Error aaya.';
   }
-  st.textContent = 'Generated: ' + new Date().toLocaleTimeString() + ' | Expiry 15 min';
-  btn.disabled = false;
+  btn.disabled=false;
 };
 </script>
 </body>
